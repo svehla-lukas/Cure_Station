@@ -1,5 +1,5 @@
-#ifndef MENU_H
-#define MENU_H
+#ifndef menu_H
+#define menu_H
 
 #include <stdint.h>
 
@@ -20,4 +20,4 @@ void moveSibling(int direction);
 void moveParentChild(int direction);
 MenuItem *getCurrentMenuItem(void);
 
-#endif // MENU_H
+#endif // menu_H
