@@ -1,4 +1,4 @@
 ../Core/Src/menu.c:12:6:initMenu	28	static
-../Core/Src/menu.c:172:6:moveSibling	16	static
-../Core/Src/menu.c:217:6:moveParentChild	0	static
-../Core/Src/menu.c:234:11:getCurrentMenuItem	0	static
+../Core/Src/menu.c:173:6:moveSibling	16	static
+../Core/Src/menu.c:234:6:moveParentChild	0	static
+../Core/Src/menu.c:258:11:getCurrentMenuItem	0	static
