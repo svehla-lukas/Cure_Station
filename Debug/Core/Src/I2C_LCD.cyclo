@@ -22,3 +22,4 @@
 ../Core/Src/I2C_LCD.c:223:6:I2C_LCD_NoBlink	1
 ../Core/Src/I2C_LCD.c:229:6:I2C_LCD_CreateCustomChar	2
 ../Core/Src/I2C_LCD.c:239:6:I2C_LCD_PrintCustomChar	1
+../Core/Src/I2C_LCD.c:244:6:I2C_LCD_ClearRow	2

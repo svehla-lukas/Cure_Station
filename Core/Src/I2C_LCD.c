@@ -240,3 +240,12 @@ void I2C_LCD_PrintCustomChar(uint8_t I2C_LCD_InstanceIndex, uint8_t CharIndex)
 {
 	I2C_LCD_Send(I2C_LCD_InstanceIndex, CharIndex, RS);
 }
+
+void I2C_LCD_ClearRow(uint8_t I2C_LCD_InstanceIndex, uint8_t RowIndex)
+{
+	I2C_LCD_SetCursor(I2C_LCD_InstanceIndex, 0, RowIndex);
+	for (int i = 0; i < 16; i++) {
+		I2C_LCD_WriteString(I2C_LCD_InstanceIndex, " ");
+	}
+	I2C_LCD_SetCursor(I2C_LCD_InstanceIndex, 0, RowIndex);
+}

@@ -49,7 +49,10 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define MENU_UP 1
+#define MENU_DOWN -1
+#define MENU_LEFT 1
+#define MENU_RIGHT -1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -73,17 +76,12 @@ float temp = 15;
 PIDController pid = { 0.1, 0.01, 0, 0 };
 
 float setTemp = 20;
+uint16_t setTime = 30;
 uint8_t programCountdown = 0;
-uint16_t setTime = 0;
 
 // uint32_t counter = 0;
-int pulseTim1 = 500;
-uint32_t up = 0;
-uint32_t down = 0;
-int32_t position = 0;
 char buffer[17];
 uint32_t counter = 0;
-
 
 // Debounc
 volatile uint32_t tickCounter = 0;
@@ -102,92 +100,117 @@ static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 /* Private Function Prototypes Declaration*/
-void pwmRamp(void);
-void encoderCallback(int8_t direction);
 void updateLCD(void);
+
+void toggleLED13(void);
+
+void encoderCallback(int8_t direction);
+
+void updateTemperatureControl(uint16_t rawAdc);
+
+void handleEncoderInterrupt(uint16_t GPIO_Pin);
+uint16_t handleGetAdc1(void);
+void handlerTimerInterrupt(TIM_HandleTypeDef *htim);
+
+float calcThermistorTemp(uint16_t rawAdc);
+float calcRegulatorAction(PIDController *pid, float setpoint,
+		float measuredValue);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /* Function Definition*/
 
+//void writeLCDFormattedValue(int row, int column, const char *label, float value) {
+//    char buffer[17];
+//    sprintf(buffer, "%s%.2f", label, value);
+//    I2C_LCD_SetCursor(row, column, 0);
+//    I2C_LCD_WriteString(0, buffer);
+//}
 void updateLCD(void) {
 
 	MenuItem *pMenuItem = getCurrentMenuItem();
 	size_t lengthName = strlen(pMenuItem->name);
-	char buffer[17] = "";
-
+	buffer[0] = '\0';
 	if (pMenuItem) {
+
+		I2C_LCD_ClearRow(0, 0);
+		I2C_LCD_WriteString(0, pMenuItem->name);
 
 		if (strcmp(pMenuItem->action, "time") == 0) {
 			sprintf(buffer, "%d:%02d", pMenuItem->value / 60,
 					pMenuItem->value % 60);
 			setTime = pMenuItem->value;
 		} else if (strcmp(pMenuItem->action, "temp") == 0) {
-			setTemp = pMenuItem->value;
 			sprintf(buffer, "%d %cC", pMenuItem->value, 0xDF);
+			setTemp = pMenuItem->value;
 		} else if (strcmp(pMenuItem->action, "start") == 0) {
 			programCountdown = 1;
+			I2C_LCD_ClearRow(0, 1);
 		}
 
-		I2C_LCD_SetCursor(0, 0, 0);
-		I2C_LCD_WriteString(0, "                ");
-		I2C_LCD_SetCursor(0, 0, 0);
-		I2C_LCD_WriteString(0, pMenuItem->name);
-		I2C_LCD_SetCursor(0, lengthName + 1, 0);
-		I2C_LCD_WriteString(0, buffer);
+		if (buffer[0] != '\0') {
+			I2C_LCD_SetCursor(0, lengthName + 1, 0);
+			I2C_LCD_WriteString(0, buffer);
+		}
+
 	} else {
 		I2C_LCD_SetCursor(0, 0, 0);
 		I2C_LCD_WriteString(0, "ERROR");
 	}
 }
 
-// Clasic thermistor measure
-float calcThermistorTemp(void) {
+void resetMenu(void) {
+	programCountdown = 0;
+	action = 0;
+	setTime = 30;
+
+	I2C_LCD_ClearRow(0, 1);
+	I2C_LCD_SetCursor(0, 0, 1);
+	I2C_LCD_WriteString(0, "-- DONE --   ");
+	moveParentChild(-1);
+	moveParentChild(-1);
+	updateLCD();
+}
+//  thermistor measure
+float calcThermistorTemp(uint16_t rawAdc) {
 	const uint16_t adcResolution = 4095;
-	//	uint16_t referenceVoltage = 3238;  // mV
 	const uint16_t serialResistance = 10570; // ohm
-	uint16_t rawAdc = 0;
 
-	HAL_ADC_Start(&hadc1);
-	if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
-		rawAdc = HAL_ADC_GetValue(&hadc1);
-	}
-	HAL_ADC_Stop(&hadc1);
-
-	// avoid divide by zero
+// avoid divide by zero
 	if (rawAdc == 0)
 		return -999;
 
-	// convert rawAdc to resistance of thermistor with 10k
+// convert rawAdc to resistance of thermistor with 10k
 	float resistance = serialResistance * rawAdc / (adcResolution - rawAdc);
 
-	//	 Steinhart-Hart equation
+//	 Steinhart-Hart equation
 	float temp = log(resistance);
 	temp = 1.0
 			/ (0.001129148
 					+ (0.000234125 + (0.0000000876741 * temp * temp)) * temp);
 	temp = temp - 273.15;
 
-	// calibration
-	//	temp = temp * 1; // gain
+// calibration
+//	temp = temp * 1; // gain
 	temp = temp - 5; // offset
 
 	return temp;
 }
 
 // calculate PI regulation action
-float PI_Compute(PIDController *pid, float setpoint, float measuredValue) {
+float calcRegulatorAction(PIDController *pid, float setpoint,
+		float measuredValue) {
 	const float dt = 0.5;
 	float errorLimit = 60;
 
 	float error = setpoint - measuredValue;
 
-	// P
+// P
 	float proportional = pid->kp * error;
 
-	// I
-
+// I
+// anti wind-up
 	pid->integral += error * dt;
 
 	if (pid->integral > errorLimit) {
@@ -198,60 +221,34 @@ float PI_Compute(PIDController *pid, float setpoint, float measuredValue) {
 
 	float integral = pid->ki * pid->integral;
 
-	//	pid->integral += stepError;
-	//	integral = pid->ki * pid->integral;
+// I
+//	pid->integral += stepError;
+//	integral = pid->ki * pid->integral;
 
-	// D
-	// Float derivative = (error - pid->previous_error) / dt;
+// D
+// Float derivative = (error - pid->previous_error) / dt;
 
-	/* Write to dispaly
-	 I2C_LCD_SetCursor(0, 0, 0);
-	 int temp_int = (int) (proportional * 10);
-	 sprintf(buffer, "%d.%d ", temp_int / 10, abs(temp_int % 10));
-	 I2C_LCD_WriteString(0, buffer);
-
-	 I2C_LCD_SetCursor(0, 7, 0);
-	 int integral_int = (int) (integral * 100);
-	 sprintf(buffer, "%d.%02d ", integral_int / 100, abs(integral_int % 100));
-	 I2C_LCD_WriteString(0, buffer);
-
-	 int error_int = (int) (error * 100);
-	 sprintf(buffer, "%d.%02d", error_int / 100, abs(error_int % 100));
-	 I2C_LCD_WriteString(0, buffer);
-	 */
 	float output = proportional + integral;
-	// Saturate output to range -1 to 1
-	if (output > 1.0f) {
-		output = 1.0f;
-	} else if (output < -1.0f) {
-		output = -1.0f;
-	}
+
+// Saturate output to range -1 to 1
+	output = (output > 1) ? 1.0f : output;
+	output = (output < -1) ? -1.0f : output;
 
 	return output;
 }
 
-// DH11 temp. and humid. measure
-void DELAY_US(uint16_t us) {
-	__HAL_TIM_SET_COUNTER(&htim4, 0);
-	while (__HAL_TIM_GET_COUNTER(&htim4) < us)
-		;
+void toggleLED13(void) {
+	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 }
 
-void pwmRamp(void) {
-	for (int dutyCycle = 0; dutyCycle <= 100; dutyCycle++) {
-		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulseTim1 * dutyCycle);
-		HAL_Delay(20);
-	}
-	for (int dutyCycle = 100; dutyCycle >= 0; dutyCycle--) {
-		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulseTim1 * dutyCycle);
-		HAL_Delay(20);
+void encoderCallback(int8_t direction) {
+	if (programCountdown == 0) {
+		moveSibling(direction);
+		updateLCD();
 	}
 }
 
-// TIM Libraries
-
-// Encoder callback
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+void handleEncoderInterrupt(uint16_t GPIO_Pin) {
 	static GPIO_PinState A, B, prevA = GPIO_PIN_SET, prevB = GPIO_PIN_SET;
 
 	if (programCountdown == 0) {
@@ -262,10 +259,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 			if (B != prevB) {
 				if (B == GPIO_PIN_SET) {
 					if (A == GPIO_PIN_RESET) {
-						moveSibling(1);
-						HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-						updateLCD();
-//						setTemp++;
+						encoderCallback(MENU_LEFT);
 					}
 				}
 				prevB = B;
@@ -279,10 +273,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 			if (A != prevA) {
 				if (A == GPIO_PIN_SET) {
 					if (B == GPIO_PIN_RESET) {
-						moveSibling(-1);
-						HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-						updateLCD();
-//						setTemp--;
+						encoderCallback(MENU_RIGHT);
 					}
 				}
 				prevA = A;
@@ -291,17 +282,77 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	}
 }
 
+uint16_t handleGetAdc1(void) {
+	uint16_t rawAdc = 0;
+	HAL_ADC_Start(&hadc1);
+	if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+		rawAdc = HAL_ADC_GetValue(&hadc1);
+	}
+	HAL_ADC_Stop(&hadc1);
+	return rawAdc;
+}
+
+void updateTemperatureControl(uint16_t rawAdc) {
+	temp = calcThermistorTemp(rawAdc);
+	action = calcRegulatorAction(&pid, setTemp, temp);
+
+	if (action > 0) {
+		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (1000 * action) - 1);
+	} else {
+		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+	}
+}
+
+void handlerTimerInterrupt(TIM_HandleTypeDef *htim) {
+	// interrupt 1ms
+	static uint32_t debounceCounter = 0;
+	static uint32_t programCounter = 0;
+
+	if (debounceActive) {
+		debounceCounter++;
+
+		if (debounceCounter >= 500) {
+			debounceCounter = 0;
+			debounceActive = 0;
+		}
+	}
+
+	if (programCoutdown == 1) {
+		programCounter+++;
+		if (programCounter >= 500) {
+			programCounter = 0;
+			setTime-;
+
+			toggleLED13();
+			updateTemperatureControl(handleGetAdc1());
+
+			if (setTime <= 0) {
+				resetMenu();
+			}
+		}
+	}
+}
+/*
+ * --- HAL FUNCTIONS ---
+ * */
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	if (programCountdown == 0) {
+		handleEncoderInterrupt(GPIO_Pin);
+	}
+}
+
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM2) {
 		if (!debounceActive && programCountdown == 0) {
 			if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) {
 				HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-				moveParentChild(1);
+				moveParentChild(MENU_UP);
 				updateLCD();
 			}
 			if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) {
 				HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-				moveParentChild(-1);
+				moveParentChild(MENU_DOWN);
 				updateLCD();
 			}
 			debounceActive = 1;
@@ -315,71 +366,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 	if (htim->Instance == TIM3) {
-		tickCounter++;
-		if (tickCounter >= 1000) {
-			tickCounter = 0;
-		}
-
-		if (debounceActive) {
-			if (tickCounter >= 500) {
-				debounceActive = 0;
-			}
-		}
-
-		if (programCountdown == 1 && tickCounter == 0) {
-			setTime--;
-
-			if (tickCounter % 500 == 0) {
-				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-
-				temp = calcThermistorTemp();
-				action = PI_Compute(&pid, setTemp, temp);
-							HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, (action > 0) ? SET : RESET);
-							HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_11);
-
-				I2C_LCD_SetCursor(0, 0, 1);
-				sprintf(buffer, "               ");
-				I2C_LCD_WriteString(0, buffer);
-
-				I2C_LCD_SetCursor(0, 0, 1);
-				int temp_int = (int) (temp * 10);
-				sprintf(buffer, "T:%d.%dC", temp_int / 10, abs(temp_int % 10));
-				I2C_LCD_WriteString(0, buffer);
-
-				I2C_LCD_SetCursor(0, 9, 1);
-				int action_int = (int) (action * 10);
-				if (action_int > 0){
-					sprintf(buffer, "A:.%d", abs(action_int % 10));
-				} else {
-					sprintf(buffer, "A:-.%d", abs(action_int % 10));
-				}
-				I2C_LCD_WriteString(0, buffer);
-
-				if (action > 0) {
-					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1,
-							(1000 * action) - 1);
-				} else {
-					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-				}
-			}
-
-			sprintf(buffer, "Count:%d:%02d", setTime / 60, setTime % 60);
-			I2C_LCD_SetCursor(0, 0, 0);
-			I2C_LCD_WriteString(0, buffer);
-
-			if (setTime <= 0) {
-				programCountdown = 0;
-				action = 0;
-				setTime = 30;
-
-				I2C_LCD_Clear(0);
-				I2C_LCD_SetCursor(0, 0, 1);
-				I2C_LCD_WriteString(0, "-- DONE --   ");
-				moveParentChild(-1);
-				moveParentChild(-1);
-				updateLCD();
-			}
-		}
+		handlerTimerInterrupt(htim);
 	}
 }
 
@@ -429,11 +416,11 @@ int main(void) {
 
 	initMenu();
 
-	// Inicializace LCD
+// Inicializace LCD
 	I2C_LCD_Init(0);
 	I2C_LCD_Clear(0);
 
-	I2C_LCD_SetCursor(0, 0, 0); // Řádek 0, Sloupec 0
+	I2C_LCD_SetCursor(0, 0, 0);
 	I2C_LCD_WriteString(0, getCurrentMenuItem()->name);
 
 	/* USER CODE END 2 */
@@ -448,32 +435,37 @@ int main(void) {
 
 			sprintf(buffer, "%ld", counter / 4);
 			I2C_LCD_SetCursor(0, 15, 0);
-			I2C_LCD_WriteString(0, " ");
-			I2C_LCD_SetCursor(0, 15, 0);
 			I2C_LCD_WriteString(0, buffer);
 		}
-		if (counter % 2 == 0) {
-//			temp = calcThermistorTemp();
-		}
+
 		if (counter % 5 == 0) {
+			// counter
 			I2C_LCD_SetCursor(0, 11, 0);
 			int tempset_int = (int) (setTemp);
 			sprintf(buffer, "T%d", tempset_int);
 			I2C_LCD_WriteString(0, buffer);
-//
-//			I2C_LCD_SetCursor(0, 0, 1);
-//			sprintf(buffer, "              ");
-//			I2C_LCD_WriteString(0, buffer);
-//
-//			I2C_LCD_SetCursor(0, 0, 1);
-//			int temp_int = (int) (temp * 10);
-//			sprintf(buffer, "T:%d.%dC", temp_int / 10, abs(temp_int % 10));
-//			I2C_LCD_WriteString(0, buffer);
-//
-//			I2C_LCD_SetCursor(0, 9, 1);
-//			int action_int = (int) (action * 10);
-//			sprintf(buffer, "A:.%d", abs(action_int % 10));
-//			I2C_LCD_WriteString(0, buffer);
+
+			if (programCountdown == 1) {
+				// row0
+				I2C_LCD_SetCursor(0, 0, 0);
+				sprintf(buffer, "Count:%d:%02d", setTime / 60, setTime % 60);
+				I2C_LCD_SetCursor(0, 0, 0);
+				I2C_LCD_WriteString(0, buffer);
+
+				I2C_LCD_SetCursor(0, 0, 1);
+				int temp_int = (int) (temp * 10);
+				sprintf(buffer, "T:%d.%dC", temp_int / 10, abs(temp_int % 10));
+				I2C_LCD_WriteString(0, buffer);
+
+				I2C_LCD_SetCursor(0, 9, 1);
+				int action_int = (int) (action * 10);
+				if (action_int > 0) {
+					sprintf(buffer, "A:.%d", abs(action_int % 10));
+				} else {
+					sprintf(buffer, "A:-.%d", abs(action_int % 10));
+				}
+				I2C_LCD_WriteString(0, buffer);
+			}
 		}
 		counter++;
 		HAL_Delay(200);

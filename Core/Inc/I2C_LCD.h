@@ -42,4 +42,6 @@ void I2C_LCD_NoBlink(uint8_t I2C_LCD_InstanceIndex);
 void I2C_LCD_CreateCustomChar(uint8_t I2C_LCD_InstanceIndex, uint8_t CharIndex, const uint8_t* CharMap);
 void I2C_LCD_PrintCustomChar(uint8_t I2C_LCD_InstanceIndex, uint8_t CharIndex);
 
+// Lukes Functions
+void I2C_LCD_ClearRow(uint8_t I2C_LCD_InstanceIndex, uint8_t RowIndex);
 #endif /* I2C_LCD_H_ */
